@@ -1,0 +1,11 @@
+/Qwen2.5-Coder-7B-Instruct-AWQ
+# env & secrets
+.env
+*.env
+
+# python cache
+__pycache__/
+*.pyc
+
+# logs
+logs/
