@@ -11,7 +11,15 @@ from tools.file_tool import (
     file_search,
     project_tree,
 )
-from tools.git_tool import git_status, git_log, git_add, git_commit, git_diff, git_run
+from tools.git_tool import (
+    git_status,
+    git_log,
+    git_add,
+    git_commit,
+    git_diff,
+    git_run,
+    git_push,
+)
 from llm_client import AgentsLLM
 
 # ===== 固定工作目录到项目根，保证相对路径解析一致 =====
@@ -55,6 +63,7 @@ TOOLS = {
     "git_commit": git_commit,
     "git_diff": git_diff,
     "git_run": git_run,
+    "git_push": git_push,
 }
 
 

@@ -97,6 +97,13 @@ def git_commit(message: str) -> str:
     """
     return _run_git(["commit", "-m", message])
 
+def git_push(branch: str = "main") -> str:
+    """把当前分支推送到远程仓库。参数 branch 是目标分支名，默认 main。
+
+    Args:
+        branch (str): 要推送的分支名，如 'main'
+    """
+    return _run_git(["push", "origin", branch])
 
 def git_diff() -> str:
     """查看工作区未暂存的改动内容。无需参数。
