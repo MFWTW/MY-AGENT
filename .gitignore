@@ -9,3 +9,15 @@ __pycache__/
 
 # logs
 logs/
+
+#knowledge_base
+knowledge_base/
+
+#docs
+docs/opencv-5.x
+
+#back/search_engineer
+back/storage_text/task_state.json
+
+#.conda
+.conda/

@@ -33,7 +33,8 @@
 │   └── vllm_server/
 │       ├── start.sh                 # 启动 vLLM 服务
 │       └── stop.sh                  # 停止 vLLM 服务
-├── front/                           # 前端目录（当前为空）
+├── front/
+│   └── agent_cli.py                 # Codex 风格终端前端（Textual）
 ├── tools/                           # 工具目录（当前为空）
 └── logs/vllm.log                    # vLLM 运行日志
 ```
@@ -108,6 +109,27 @@ bash back/vllm_server/stop.sh
 ```
 
 该脚本会释放 8000 端口并终止 vLLM 相关进程。
+
+### 5. 启动终端前端
+
+```bash
+cd /mnt/e/agent
+python front/agent_cli.py
+```
+
+前端默认是 **Agent 模式**（走 `back/ReAct.py`，会展示思考 / 工具调用 / 观察结果 / 最终答案），
+也可以输入 `/chat` 切换到直接对话模式。常用命令：
+
+> 输入框下方的状态行会从 `back/.env` 读取并显示当前模型名称和 API 地址（不显示密钥）。
+> 模型思考过程超过 1000 字时会折叠成小框，点击标题即可展开查看完整思考内容。
+
+- `/help`：查看所有命令
+- `/clear`：清空当前对话
+- `/agent` / `/chat`：切换 Agent / 对话模式
+- `/model`：查看当前模型配置
+- `/pwd`：查看当前所在项目目录
+- `/stop`：停止当前任务（或 `Ctrl+X`）
+- `Ctrl+C`：退出
 
 ## 业务代码调用
 

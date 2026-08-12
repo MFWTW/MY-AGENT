@@ -1,10 +1,11 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
-from typing import List, Dict
+from typing import Callable, List, Dict
 
 # 加载环境变量
-load_dotenv()
+# 无论从哪个目录启动，都优先加载 llm_client.py 同目录下的 .env
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
 
 
 class AgentsLLM:
@@ -30,57 +31,21 @@ class AgentsLLM:
         if not all([self.model, api_key, base_url]):
             raise ValueError(
                 "Missing required parameters: model, api_key, or base_url."
-            )
+        self.api_key = api_key
+        self.base_url = base_url
+        self.timeout = timeout
+        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
+    def process_request(self, prompt: str) -> str:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=150,
+            timeout=self.timeout
+        )
+        return response.choices[0].message.content.strip()
 
-    def think(self, messages: List[Dict[str, str]], temperature: float = 0) -> str:
-        """初始化客户端，优先使用传入参数，如果没有，则从环境变量加载
-
-        Args:
-            messages (List[Dict[str, str]]): _description_
-            temperature (float, optional): _description_. Defaults to 0.
-
-        Returns:
-            str: _description_
-        """
-        print(f"正在调用{self.model}模型进行推理...")
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature,
-                stream=True,
-            )
-
-            # 处理流式响应
-            print("大模型响应成功")
-            collected_content = []
-            for chunk in response:
-                content = chunk.choices[0].delta.content or ""
-                print(content, end="", flush=True)
-                collected_content.append(content)
-            print()  # 响应玩换行
-            return "".join(collected_content)
-
-        except Exception as e:
-            print(f"调用大模型失败: {e}")
-            return None
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     llm = AgentsLLM()
-
-    exampleMessages = [
-        {
-            "role": "system",
-            "content": "You are a helpful assistant that writes Python code.",
-        },
-        {"role": "user", "content": "写一个快速排序算法"},
-    ]
-
-    print("调用LLM")
-    responseText = llm.think(messages=exampleMessages)
-    if responseText:
-        print("LLM返回结果：")
-        print(responseText)
+    result = llm.process_request('Hello, how are you?')
+    print(result)
