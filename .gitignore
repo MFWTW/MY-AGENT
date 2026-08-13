@@ -18,6 +18,7 @@ docs/opencv-5.x
 
 #back/search_engineer
 back/storage_text/task_state.json
+back/storage_text/active_profile.txt
 
 #.conda
 .conda/

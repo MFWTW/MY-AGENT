@@ -5,7 +5,14 @@ import os
 import subprocess
 
 BASE = "https://modelscope.cn/api/v1/models/Qwen/Qwen2.5-Coder-7B-Instruct-AWQ/repo"
-DEST = "/mnt/e/agent/Qwen2.5-Coder-7B-Instruct-AWQ"
+# 模型下载到项目根目录（自动推导，不再写死 /mnt/e/agent）
+DEST = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "Qwen2.5-Coder-7B-Instruct-AWQ",
+)
+# 可用环境变量覆盖
+DEST = os.getenv("MODEL_DIR", DEST)
+
 os.makedirs(DEST, exist_ok=True)
 
 # 需要下载的文件（小文件用 urllib，大文件用 curl 支持断点续传）

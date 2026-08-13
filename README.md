@@ -38,6 +38,10 @@
 ```text
 .
 ├── download_awq.py                  # 模型下载脚本（ModelScope）
+├── setup.sh                         # 一键安装（Ubuntu / WSL2）
+├── start.sh                         # 一键启动（myagent 命令指向此脚本）
+├── launcher.py                      # 启动器：自动拉起 vLLM → 打开前端 → 退出自动停止
+├── setup.bat / agent.bat            # Windows 侧入口（通过 WSL 调用）
 ├── README.md
 ├── readme_path.md                   # Coding Agent 能力建设路线文档
 ├── back/
@@ -72,9 +76,9 @@
 
 ## 环境要求
 
-- WSL2 / Linux，NVIDIA GPU（本项目按 8GB 显存配置）；
-- conda，且已创建名为 `agent` 的环境，安装了 vLLM 0.26.0、PyTorch（CUDA 版）、AutoAWQ、FlashAttention、Textual 等依赖；
-- 模型文件已存在于 `/mnt/e/agent/Qwen2.5-Coder-7B-Instruct-AWQ`；
+- WSL2 / Ubuntu / Linux，NVIDIA GPU（本项目按 8GB 显存配置）；
+- conda（`setup.sh` 会自动安装 Miniconda），环境名为 `agent`，包含 vLLM 0.26.0、PyTorch（CUDA 版）、Textual 等依赖；
+- 模型文件由 `setup.sh` 自动下载到项目根目录 `Qwen2.5-Coder-7B-Instruct-AWQ`；
 - 知识库 `knowledge_base/opencv_kb` 已构建（若缺失可参考“知识库”一节重建）。
 
 如果模型文件缺失，可用以下命令下载：
@@ -84,7 +88,53 @@ conda activate agent
 python download_awq.py
 ```
 
+## 一键安装（Ubuntu / WSL2）
+
+从 GitHub 克隆后，只需执行一次 `setup.sh`，它会自动完成：
+
+- 安装系统工具（curl、git）；
+- 自动安装 Miniconda（若没有 conda）；
+- 创建 Python 3.10 的 `agent` conda 环境；
+- 安装前端依赖和 vLLM 0.26.0；
+- 下载 Qwen2.5-Coder-7B-Instruct-AWQ 模型（约 5.5GB）；
+- 生成 `back/.env`；
+- 把 `myagent` 命令安装到 `~/.local/bin`。
+
+```bash
+git clone git@github.com:MFWTW/MY-AGENT.git
+cd MY-AGENT
+bash setup.sh
+```
+
+安装完成后，打开一个新终端（或先 `source ~/.bashrc`），直接输入：
+
+```bash
+myagent
+```
+
+`myagent` 会自动启动 vLLM → 等待 API 就绪 → 打开 Agent 前端；
+退出前端后会自动停止 vLLM 并释放显存。
+
+Windows 用户也可以直接双击 `agent.bat`，它会自动进入 WSL 并执行同样的启动流程。
+
+## 首次使用：导入模型
+
+如果还没有可用模型，启动 `myagent` 后界面会提示配置。有两种方式：
+
+- 输入 `/import-local`：自动扫描项目目录里的模型文件夹，也可以直接输入本地模型绝对路径；导入成功后会保存到 `back/.env` 的 `LOCAL_MODEL_DIR`。
+- 输入 `/config-api`：按提示填写 API Base URL、模型 ID、API Key，保存后自动切换到 API。
+
+如果是在启动时没有本地模型、vLLM 被跳过的会话里导入本地模型，退出后重新运行 `myagent` 即可自动拉起 vLLM。配置完成后，随时可以用 `/local` 和 `/api` 来回切换。
+
 ## 快速开始
+
+日常使用推荐直接执行：
+
+```bash
+myagent
+```
+
+下面是手动拆开的每一步，供排查问题时使用。
 
 ### 1. 启动 vLLM 服务
 
@@ -142,9 +192,15 @@ python front/agent_cli.py
 - `/agent` / `/chat`：切换 Agent / 对话模式
 - `/again`：重新执行上一条任务
 - `/model`：查看当前模型配置
+- `/api`：切换到 API 模型
+- `/local`：切换到本地模型
+- `/switch`：切换模型，如 `/switch api`
+- `/import-local`：扫描并导入本地模型
+- `/config-api`：配置云端 API
+- `/cancel`：取消当前配置向导
 - `/pwd`：查看当前所在项目目录
 - `/stop`：停止当前任务（或 `Ctrl+X`）
-- `/quit`：退出（或 `Ctrl+Q`）
+- `/quit`：退出（或 `Ctrl+D`）
 
 > 输入框下方的状态行会从 `back/.env` 读取并显示当前模型名称和 API 地址（不显示密钥）。
 > 模型思考过程超过 1000 字时会折叠成小框，点击标题即可展开查看完整思考内容。
@@ -159,12 +215,24 @@ bash back/vllm_server/stop.sh
 
 ## 配置
 
-`back/.env` 由 `back/llm_client.py` 自动加载，通过环境变量读取模型配置：
+`back/.env` 由 `back/llm_client.py` 自动加载，支持**本地 vLLM**和**云端 OpenAI 兼容 API**两套配置，前端输入 `/switch api` / `/switch local` 即可来回切换，选择会保存在 `back/storage_text/active_profile.txt`。
+
+本地模型配置：
 
 - `LLM_BASE_URL`：API 地址，本地 vLLM 为 `http://localhost:8000/v1`
 - `LLM_MODEL_ID`：模型名称，对应 vLLM 的 `--served-model-name`
 - `LLM_API_KEY`：API Key（本地 vLLM 可填任意值）
 - `LLM_TIMEOUT`：请求超时时间（秒）
+- `LOCAL_MODEL_DIR`：本地模型目录路径（`/import-local` 导入后自动写入）
+
+云端 API 配置（OpenAI 兼容，例如 DeepSeek）：
+
+- `API_BASE_URL`：例如 `https://api.deepseek.com/v1`
+- `API_MODEL_ID`：例如 `deepseek-chat`
+- `API_API_KEY`：你的真实 API Key
+- `API_TIMEOUT`：请求超时时间（秒）
+
+也可以用环境变量指定默认配置：`AGENT_PROFILE=api bash start.sh`，此时启动器会跳过本地 vLLM，直接打开前端。
 
 单独测试 LLM 客户端：
 

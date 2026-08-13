@@ -174,7 +174,12 @@ def _ask_confirm(cmd: str) -> bool:
 
 # ===== 固定工作目录到项目根，保证相对路径解析一致 =====
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # E:\agent
-os.chdir(PROJECT_ROOT)
+
+# ===== Workspace：自动识别 =====
+# launcher.py 会把启动时的当前目录写入环境变量 AGENT_WORKSPACE；
+# 直接跑 ReAct.py（未设环境变量）时，回退到项目根目录，保持原行为
+WORKSPACE = os.getenv("AGENT_WORKSPACE") or PROJECT_ROOT
+os.chdir(WORKSPACE)
 
 # 配置
 MAX_STEPS = 20  # 最多迭代轮数
@@ -258,12 +263,13 @@ SYSTEM_PROMPT = f"""你是一个运行在终端里的 Coding Agent，你的任�
 【长期记忆（跨会话经验，供参考）】
 {_memory_snippet}
 
-【当前工作目录】{os.getcwd()}
+【工作区 Workspace（当前工作目录）】{WORKSPACE}
 【项目结构约定】
-- 项目根目录：{PROJECT_ROOT}
+- 项目根目录（本 Agent 自带代码）：{PROJECT_ROOT}
 - 业务代码全部放在 back/ 子目录下：back/llm_client.py、back/ReAct.py
 - 工具脚本放在 back/tools/ 目录下：back/tools/file_tool.py
-- 写文件时路径请【带上 back/ 前缀】，例如 back/tools/hello.py
+- 你的工作区是 {WORKSPACE}：用户任务相关的文件都在这里操作
+- 写文件时请【带上相对工作区的路径】
 - 不确定路径时，先调用 project_tree 查看整体结构，再操作
 
 【git 使用约定】

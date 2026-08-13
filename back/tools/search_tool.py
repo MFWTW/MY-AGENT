@@ -17,6 +17,15 @@ from kb_indexer import KBIndexer  # 现在一定能找到
 _indexer = None
 
 
+def _kb_dir() -> str:
+    """知识库目录：项目根/knowledge_base/opencv_kb"""
+    return os.path.join(
+        os.path.dirname(os.path.dirname(SEARCH_ENGINEER_DIR)),
+        "knowledge_base",
+        "opencv_kb",
+    )
+
+
 def get_indexer() -> KBIndexer:
     """懒加载：第一次调用才构建索引，之后复用"""
     global _indexer
@@ -33,6 +42,11 @@ def search_kb(query: str, top_k: int = 3) -> str:
     例如 "cv.threshold 怎么用"、"Canny 边缘检测"、"轮廓检测"。
     返回：文档标题 + 内容片段列表。
     """
+    if not os.path.isdir(_kb_dir()):
+        return (
+            "[知识库] 知识库尚未安装（GitHub 克隆不包含 knowledge_base）。"
+            "可忽略此工具，或按 README 的“知识库”一节手动构建。"
+        )
     kb = get_indexer()
     results = kb.search(query, top_k=top_k)
 

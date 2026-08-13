@@ -1,0 +1,14 @@
+# ===== HelloAents 依赖清单 =====
+# 前端 + 后端基础
+openai>=1.0
+python-dotenv>=1.0
+rich>=13.0
+textual>=0.50
+numpy>=1.24
+opencv-python-headless>=4.8
+
+# 模型下载
+requests>=2.28
+
+# 注意: vLLM 需要 Linux/WSL + NVIDIA GPU + CUDA,
+#       由 setup.sh 单独安装,不放在这里(Windows 装不了)
