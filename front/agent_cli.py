@@ -21,7 +21,6 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.widgets import Collapsible, Footer, Header, Input, Static
 
-
 BACK_DIR = Path(__file__).resolve().parent.parent / "back"
 PROJECT_DIR = BACK_DIR.parent
 load_dotenv(BACK_DIR / ".env")
@@ -31,7 +30,7 @@ THINK_COLLAPSE_THRESHOLD = 1000  # 思考过程超过该字数就折叠成小框
 
 WELCOME = """[bold cyan]🤖 Codex 终端[/bold cyan]
 [dim]本地 Coding Agent · Textual 前端[/dim]
-[dim]输入任务开始执行，/help 查看命令，Ctrl+C 退出[/dim]"""
+[dim]输入任务开始执行，/help 查看命令，Ctrl+C 复制选中文本，Ctrl+Q 退出[/dim]"""
 
 HELP_TEXT = """[bold cyan]/help[/]      显示本帮助
 [bold cyan]/clear[/]     清空当前对话
@@ -41,7 +40,7 @@ HELP_TEXT = """[bold cyan]/help[/]      显示本帮助
 [bold cyan]/pwd[/]       查看当前所在项目目录
 [bold cyan]/again[/]     重新执行上一条任务
 [bold cyan]/stop[/]      停止当前任务（或 Ctrl+X）
-[bold cyan]/quit[/]      退出（或 Ctrl+C）"""
+[bold cyan]/quit[/]      退出（或 Ctrl+Q）"""
 
 CHAT_SYSTEM = (
     "你是一个运行在终端里的 AI 编程助手。"
@@ -61,7 +60,8 @@ class CodexApp(App):
     background = "transparent"
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "退出", priority=True),
+        # Ctrl+C 保留 Textual 默认的“复制选中文本”，不再退出
+        Binding("ctrl+q", "quit", "退出", priority=True),
         Binding("ctrl+x", "stop", "停止", priority=True),
         Binding("ctrl+l", "clear", "清空"),
         Binding("ctrl+t", "toggle_mode", "切换模式"),
@@ -232,6 +232,16 @@ class CodexApp(App):
         self.messages: Optional[VerticalScroll] = None
         self.status_bar: Optional[Static] = None
         self.prompt: Optional[Input] = None
+        self._confirm_event = threading.Event()
+        self._pending_confirm = None  # 等待确认的命令
+        self._confirm_result = False
+        # 注册到后端模块
+        try:
+            from ReAct import CONFIRM_CALLBACK
+
+            # 用模块全局变量注册（ReAct 在 back 目录，需要已 import）
+        except Exception:
+            pass
 
     # ---------- 界面 ----------
 
@@ -263,6 +273,18 @@ class CodexApp(App):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
         self.prompt.value = ""
+        # ===== 人工确认：等待 y/n =====
+        if self._pending_confirm is not None:
+            self._confirm_result = text.lower() in ("y", "yes")
+            self._pending_confirm = None
+            self.prompt.placeholder = (
+                "输入任务，Enter 发送，/help 查看命令"
+                if self.mode == "agent"
+                else "输入问题，Enter 发送，/help 查看命令"
+            )
+            self._confirm_event.set()
+            self._set_status()
+            return
         if not text:
             return
         if text.startswith("/"):
@@ -306,7 +328,10 @@ class CodexApp(App):
             self.exit()
         else:
             self._mount(
-                Static(f"[#d29922]未知命令 {escape(cmd)}，输入 /help 查看帮助[/]", classes="warn-msg")
+                Static(
+                    f"[#d29922]未知命令 {escape(cmd)}，输入 /help 查看帮助[/]",
+                    classes="warn-msg",
+                )
             )
 
     def _submit(self, text: str) -> None:
@@ -328,7 +353,9 @@ class CodexApp(App):
 
     def _clear_messages(self) -> None:
         if self.busy:
-            self.notify("处理中不能清空，先按 Ctrl+X 停止", severity="warning", timeout=3)
+            self.notify(
+                "处理中不能清空，先按 Ctrl+X 停止", severity="warning", timeout=3
+            )
             return
         for widget in list(self.messages.children):
             widget.remove()
@@ -361,7 +388,9 @@ class CodexApp(App):
     def _stop(self) -> None:
         if self._worker is not None and self._worker.is_alive():
             self._cancel_event.set()
-            self._mount(Static("[#d29922]已请求停止，等待当前请求返回…[/]", classes="warn-msg"))
+            self._mount(
+                Static("[#d29922]已请求停止，等待当前请求返回…[/]", classes="warn-msg")
+            )
         elif self.busy:
             self.notify("正在等待请求返回", severity="warning", timeout=3)
 
@@ -369,7 +398,9 @@ class CodexApp(App):
         try:
             self._import_backend()
         except Exception as exc:
-            self._mount(Static(f"[red]后端导入失败：{escape(str(exc))}[/]", classes="error-msg"))
+            self._mount(
+                Static(f"[red]后端导入失败：{escape(str(exc))}[/]", classes="error-msg")
+            )
             return
         self._mount(
             Static(
@@ -449,7 +480,9 @@ class CodexApp(App):
 
     def _add_user(self, text: str) -> None:
         self._mount(
-            Static(f"[bold #a371f7]❯[/] {escape(text)}", markup=True, classes="user-msg")
+            Static(
+                f"[bold #a371f7]❯[/] {escape(text)}", markup=True, classes="user-msg"
+            )
         )
 
     def _add_step(self, step: int) -> None:
@@ -542,6 +575,11 @@ class CodexApp(App):
                 sys.path.insert(0, str(back_dir))
             from llm_client import AgentsLLM
             from ReAct import MAX_STEPS, run_react_loop
+            import ReAct
+
+            # ===== 后端导入时绑定人工确认回调 =====
+            ReAct.CONFIRM_CALLBACK = self._handle_confirm
+            ReAct.CONFIRM_ENABLED = True
 
             self._backend = (AgentsLLM, run_react_loop, MAX_STEPS)
         return self._backend
@@ -580,6 +618,31 @@ class CodexApp(App):
 
     def _agent_log(self, msg: str) -> None:
         self._ui(self._add_log, msg)
+
+    # ---------- 人工确认 ----------
+
+    def _handle_confirm(self, cmd: str) -> bool:
+        """后端工作线程调用：显示确认请求并阻塞等待用户回答"""
+        self._confirm_event.clear()
+        self._pending_confirm = cmd
+        self._confirm_result = False
+        # 切回 UI 线程显示提示
+        self._ui(self._show_confirm, cmd)
+        # 阻塞等待用户输入 y/n（最多 120 秒，超时按拒绝处理）
+        self._confirm_event.wait(timeout=120)
+        return self._confirm_result
+
+    def _show_confirm(self, cmd: str) -> None:
+        """UI 线程：把输入框变成确认框"""
+        self.prompt.placeholder = "危险命令，输入 y 放行 / n 拒绝: "
+        self._mount(
+            Static(
+                f"[#d29922]❓ 人工确认[/]\n[#d29922]命令: {escape(cmd)}[/]\n"
+                f"[dim]输入 [bold]y[/] 放行，[bold]n[/] 拒绝[/]",
+                classes="warn-msg",
+            )
+        )
+        self.prompt.focus()
 
     def _agent_token(self, token: str) -> None:
         if self._cancel_event.is_set():

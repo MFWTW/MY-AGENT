@@ -3,6 +3,8 @@ import os
 import re
 import subprocess
 import sys
+import shlex
+import threading
 from tools.file_tool import (
     read_file,
     write_file,
@@ -34,6 +36,142 @@ from memory import (
 from tools.search_tool import search_kb
 from llm_client import AgentsLLM
 
+# ===== 第一层安全：命令白名单 =====
+# 允许 Agent 执行的命令（白名单）
+ALLOWED_COMMANDS = {
+    # 查看 / 导航
+    "ls",
+    "ll",
+    "dir",
+    "pwd",
+    "cd",
+    "tree",
+    "find",
+    "which",
+    "where",
+    # 读文件
+    "cat",
+    "head",
+    "tail",
+    "less",
+    "more",
+    "grep",
+    "rg",
+    "wc",
+    # 写文件（若想更严，可去掉，改用 write_file 工具）
+    "touch",
+    "mkdir",
+    "cp",
+    "mv",
+    "rm",
+    "chmod",
+    # 编程 / 运行
+    "python",
+    "python3",
+    "pip",
+    "pip3",
+    "conda",
+    "pytest",
+    # 网络 / 压缩
+    "curl",
+    "wget",
+    "unzip",
+    "tar",
+    "zip",
+    # git 兜底（git_tool.py 里还有更细的子命令白名单）
+    "git",
+}
+
+# 危险命令黑名单（正则，命中即拒绝）
+DANGEROUS_PATTERNS = [
+    r"\bsudo\b",  # 提权
+    r"\b(shutdown|reboot|halt|poweroff)\b",  # 关机重启
+    r"\b(mkfs|parted|fdisk|format)\b",  # 磁盘操作
+    r"rm\s+-[a-zA-Z]*rf\s+(/|~|\*|\.)",  # rm -rf 危险目标
+    r"dd\s+if=.*\s+of=/dev/",  # 写块设备
+    r">\s*/dev/(sd|hd|nvme)",  # 重定向到磁盘
+    r"chmod\s+-R\s+777\s*/",  # 全盘放开权限
+]
+
+# 需要人工确认的命令模式（正则）：合法但有副作用
+NEED_CONFIRM_PATTERNS = [
+    r"^(rm|mv|cp|chmod|chown)\b",  # 文件写/删/改权限
+    r"^(pip|pip3|conda)\s+(install|uninstall|remove|update)",  # 装/卸包
+    r"^(git)\s+(push|reset|clean|checkout|merge|rebase|stash)",  # git 破坏性操作
+    r"(>|>>)\s*\S+",  # 重定向写文件
+    r"^(curl|wget)\s+.*( -o| -O| >)",  # 网络下载到本地
+]
+
+# 全局确认回调：由前端注册；None 时退回终端 input()
+CONFIRM_CALLBACK = None
+# 总开关：设为 False 可完全跳过确认（仅调试用）
+CONFIRM_ENABLED = True
+
+
+def _split_shell(cmd: str) -> list:
+    """按 shell 规则切分命令，解析失败时退回简单 split。"""
+    try:
+        return shlex.split(cmd)
+    except ValueError:
+        return cmd.split()
+
+
+def _check_command(cmd: str):
+    """白名单 + 黑名单双重检查。返回 (是否放行, 说明)。"""
+    # 1) 黑名单：危险模式直接拒绝
+    for pat in DANGEROUS_PATTERNS:
+        if re.search(pat, cmd):
+            return False, f"命中危险命令模式: {pat}"
+    # 2) 白名单：拆成子命令段逐个检查（处理 && ; | ||）
+    for seg in re.split(r"(?:\&\&|\|\||[;|])", cmd):
+        seg = seg.strip()
+        if not seg:
+            continue
+        tokens = _split_shell(seg)
+        if not tokens:
+            continue
+        base = os.path.basename(tokens[0]).lower().lstrip("./")
+        if base not in ALLOWED_COMMANDS:
+            return False, (
+                f"命令 {tokens[0]!r} 不在白名单中。"
+                f"允许的命令: {', '.join(sorted(ALLOWED_COMMANDS))}"
+            )
+    return True, ""
+
+
+def _needs_confirm(cmd: str) -> bool:
+    """判断命令是否需要人工确认"""
+    for pat in NEED_CONFIRM_PATTERNS:
+        if re.search(pat, cmd):
+            return True
+    return False
+
+
+def _ask_confirm(cmd: str) -> bool:
+    """判断命令是否需要人工确认"""
+    for pat in NEED_CONFIRM_PATTERNS:
+        if re.search(pat, cmd):
+            return True
+
+    return False
+
+
+def _ask_confirm(cmd: str) -> bool:
+    """请求人工确认。返回 True=放行，False=拒绝。
+
+    优先走前端注册的回调；前端不可用时用终端 input() 兜底。
+    """
+    if not CONFIRM_ENABLED:
+        return True
+    if CONFIRM_CALLBACK is not None:
+        return CONFIRM_CALLBACK(cmd)
+    try:
+        ans = input(f"[人工确认] 允许执行: {cmd}  (y/N): ").strip().lower()
+        return ans in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
 # ===== 固定工作目录到项目根，保证相对路径解析一致 =====
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # E:\agent
 os.chdir(PROJECT_ROOT)
@@ -46,14 +184,23 @@ MAX_OBS_LEN = 2000  # 工具输出最多保留的字数
 MEMORY = load_memory()  # 跨会话的长期记忆
 
 
-# 工具注册表
 def run_bash(cmd: str = None, **kwargs) -> str:
-    """在shell执行命令。参数名是 cmd（或 command），传入要执行的命令字符串，如 'ls -la'。"""
-    # 兼容模型误用参数名 command
+    """在shell执行命令（受命令白名单限制）。参数名是 cmd（或 command）。"""
     if cmd is None and "command" in kwargs:
         cmd = kwargs["command"]
     if not cmd:
         return "[系统] run_bash 需要 cmd 参数，例如 run_bash(cmd='ls')"
+
+    # ===== 第一层安全：白名单检查 =====
+    ok, reason = _check_command(cmd)
+    if not ok:
+        return f"[已拦截] {reason}"
+
+    # ===== 第三层安全：人工确认 =====
+    if _needs_confirm(cmd):
+        if not _ask_confirm(cmd):
+            return "[已拒绝] 用户未确认执行该命令，请换一个方案"
+
     try:
         result = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=CMD_TIMEOUT
@@ -63,7 +210,7 @@ def run_bash(cmd: str = None, **kwargs) -> str:
         output = f"[命令超时(>{CMD_TIMEOUT}秒)]"
     except Exception as exc:
         output = f"[执行错误: {exc}]"
-    return output[:MAX_OBS_LEN]  # 限制输出长度
+    return output[:MAX_OBS_LEN]
 
 
 # 工具注册表

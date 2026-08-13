@@ -1,7 +1,7 @@
 import os
 from openai import OpenAI
 from dotenv import load_dotenv
-from typing import Callable, List, Dict
+from typing import Callable, List, Dict, Optional
 
 # 加载环境变量
 # 无论从哪个目录启动，都优先加载 llm_client.py 同目录下的 .env
@@ -30,11 +30,61 @@ class AgentsLLM:
         timeout = timeout or int(os.getenv("LLM_TIMEOUT", 60))
         if not all([self.model, api_key, base_url]):
             raise ValueError(
-                "Missing required parameters: model, api_key, or base_url."
+                "Missing required parameters: model, api_key, or base_url.")
         self.api_key = api_key
         self.base_url = base_url
         self.timeout = timeout
+        self.last_error = ""
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+
+    def think(
+        self,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 2048,
+        on_token: Optional[Callable[[str], None]] = None,
+    ) -> Optional[str]:
+        """多轮对话请求，支持流式回调。
+
+        Args:
+            messages: OpenAI 格式的消息列表（system / user / assistant / tool 结果）。
+            temperature: 采样温度。
+            max_tokens: 最大生成 token 数。
+            on_token: 流式回调，收到每个增量文本时调用；传入后自动启用流式。
+
+        Returns:
+            完整回答文本；模型返回空响应时返回 None。
+        """
+        self.last_error = ""
+        stream = on_token is not None
+
+        kwargs = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": stream,
+            "timeout": self.timeout,
+        }
+
+        if stream:
+            chunks: List[str] = []
+            response = self.client.chat.completions.create(**kwargs)
+            for chunk in response:
+                delta = chunk.choices[0].delta
+                token = getattr(delta, "content", None) or ""
+                if token:
+                    chunks.append(token)
+                    on_token(token)
+            text = "".join(chunks).strip()
+        else:
+            response = self.client.chat.completions.create(**kwargs)
+            text = (response.choices[0].message.content or "").strip()
+
+        if not text:
+            self.last_error = "模型返回了空响应"
+            return None
+        return text
 
     def process_request(self, prompt: str) -> str:
         response = self.client.chat.completions.create(
