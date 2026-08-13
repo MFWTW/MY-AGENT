@@ -118,7 +118,7 @@ def has_local_model() -> bool:
 def has_api_config() -> bool:
     cfg = get_profile_config("api")
     return bool(
-        cfg["base_url"]
+        cfg["base_url"].startswith(("http://", "https://"))
         and cfg["model"]
         and cfg["api_key"]
         and "请替换" not in cfg["api_key"]
@@ -188,6 +188,11 @@ def save_api_config(
     timeout = str(timeout or "60").strip()
     if not all([base_url, model_id, api_key]):
         raise ValueError("API Base URL、模型 ID、API Key 都不能为空")
+    if not base_url.startswith(("http://", "https://")):
+        raise ValueError(
+            "API Base URL 必须以 http:// 或 https:// 开头，"
+            "例如 https://api.deepseek.com/v1；不要粘贴 API Key"
+        )
     update_env_file("API_BASE_URL", base_url)
     update_env_file("API_MODEL_ID", model_id)
     update_env_file("API_API_KEY", api_key)

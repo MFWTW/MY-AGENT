@@ -124,7 +124,7 @@ Windows 用户也可以直接双击 `agent.bat`，它会自动进入 WSL 并执�
 - 输入 `/import-local`：自动扫描项目目录里的模型文件夹，也可以直接输入本地模型绝对路径；导入成功后会保存到 `back/.env` 的 `LOCAL_MODEL_DIR`。
 - 输入 `/config-api`：按提示填写 API Base URL、模型 ID、API Key，保存后自动切换到 API。
 
-如果是在启动时没有本地模型、vLLM 被跳过的会话里导入本地模型，退出后重新运行 `myagent` 即可自动拉起 vLLM。配置完成后，随时可以用 `/local` 和 `/api` 来回切换。
+如果是在启动时没有本地模型、vLLM 被跳过的会话里导入本地模型，退出后重新运行 `myagent` 即可自动拉起 vLLM。配置完成后，随时可以用 `/local` 和 `/api` 来回切换；从 API 切回本地时，如果 vLLM 没有运行，前端会在第一次请求时自动后台启动 vLLM 并等待就绪。
 
 ## 快速开始
 
@@ -202,6 +202,8 @@ python front/agent_cli.py
 - `/stop`：停止当前任务（或 `Ctrl+X`）
 - `/quit`：退出（或 `Ctrl+D`）
 
+> 输入以 `/` 开头时，输入框会显示命令补全提示，按 `→`（右方向键）即可接受。
+
 > 输入框下方的状态行会从 `back/.env` 读取并显示当前模型名称和 API 地址（不显示密钥）。
 > 模型思考过程超过 1000 字时会折叠成小框，点击标题即可展开查看完整思考内容。
 
@@ -231,6 +233,8 @@ bash back/vllm_server/stop.sh
 - `API_MODEL_ID`：例如 `deepseek-chat`
 - `API_API_KEY`：你的真实 API Key
 - `API_TIMEOUT`：请求超时时间（秒）
+
+> 注意：`API_BASE_URL` 填的是网址（`https://...`），不要填成 `sk-` 开头的 API Key。
 
 也可以用环境变量指定默认配置：`AGENT_PROFILE=api bash start.sh`，此时启动器会跳过本地 vLLM，直接打开前端。
 

@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 import threading
+import time
+import urllib.request
 from pathlib import Path
 from typing import List, Optional, Tuple, Type
 
@@ -19,6 +22,7 @@ from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.suggester import Suggester
 from textual.widgets import Collapsible, Footer, Header, Input, Static
 
 BACK_DIR = Path(__file__).resolve().parent.parent / "back"
@@ -32,7 +36,7 @@ THINK_COLLAPSE_THRESHOLD = 1000  # 思考过程超过该字数就折叠成小框
 
 WELCOME = """[bold cyan]🤖 Codex 终端[/bold cyan]
 [dim]本地 Coding Agent · Textual 前端[/dim]
-[dim]输入任务开始执行，/help 查看命令，Ctrl+C 复制选中文本，Ctrl+D 退出[/dim]"""
+[dim]输入任务开始执行，输入 / 有命令提示，Ctrl+C 复制选中文本，Ctrl+D 退出[/dim]"""
 
 HELP_TEXT = """[bold cyan]/help[/]      显示本帮助
 [bold cyan]/clear[/]     清空当前对话
@@ -58,6 +62,42 @@ CHAT_SYSTEM = (
 
 class _AgentCancelled(Exception):
     """用户主动停止任务时抛出，用于穿透 LLM 流式调用。"""
+
+
+COMMAND_SUGGESTIONS = [
+    "/help",
+    "/clear",
+    "/agent",
+    "/chat",
+    "/model",
+    "/api",
+    "/local",
+    "/switch api",
+    "/switch local",
+    "/import-local",
+    "/config-api",
+    "/cancel",
+    "/again",
+    "/pwd",
+    "/stop",
+    "/quit",
+]
+
+
+class CommandSuggester(Suggester):
+    """输入 / 开头时，提示可用的命令"""
+
+    def __init__(self, enabled) -> None:
+        super().__init__(case_sensitive=False)
+        self._enabled = enabled
+
+    async def get_suggestion(self, value: str) -> str | None:
+        if not self._enabled() or not value.startswith("/"):
+            return None
+        for cmd in COMMAND_SUGGESTIONS:
+            if cmd.startswith(value):
+                return cmd
+        return None
 
 
 class CodexApp(App):
@@ -248,6 +288,9 @@ class CodexApp(App):
         self._setup_step: Optional[str] = None
         self._setup_data: dict = {}
         self._setup_scan_results: List[str] = []
+        self._command_suggester = CommandSuggester(
+            lambda: self._setup_step is None
+        )
         # 注册到后端模块
         try:
             from ReAct import CONFIRM_CALLBACK
@@ -268,8 +311,9 @@ class CodexApp(App):
                 with Horizontal(id="prompt_row"):
                     yield Static("❯", id="prompt_symbol", markup=False)
                     yield Input(
-                        placeholder="输入任务，Enter 发送，/help 查看命令",
+                        placeholder="输入任务，输入 / 查看命令提示",
                         id="prompt",
+                        suggester=self._command_suggester,
                     )
                 yield Static("", id="status", markup=True)
         yield Footer()
@@ -297,9 +341,9 @@ class CodexApp(App):
             self._confirm_result = text.lower() in ("y", "yes")
             self._pending_confirm = None
             self.prompt.placeholder = (
-                "输入任务，Enter 发送，/help 查看命令"
+                "输入任务，输入 / 查看命令提示"
                 if self.mode == "agent"
-                else "输入问题，Enter 发送，/help 查看命令"
+                else "输入问题，输入 / 查看命令提示"
             )
             self._confirm_event.set()
             self._set_status()
@@ -416,9 +460,9 @@ class CodexApp(App):
             return
         self.mode = mode
         self.prompt.placeholder = (
-            "输入任务，Enter 发送，/help 查看命令"
+            "输入任务，输入 / 查看命令提示"
             if mode == "agent"
-            else "输入问题，Enter 发送，/help 查看命令"
+            else "输入问题，输入 / 查看命令提示"
         )
         self._set_status()
         self._mount(
@@ -460,9 +504,35 @@ class CodexApp(App):
             return
         try:
             self._import_backend()
-            from llm_client import AgentsLLM, get_profile_config, set_active_profile
+            from llm_client import (
+                AgentsLLM,
+                get_profile_config,
+                has_api_config,
+                has_local_model,
+                set_active_profile,
+            )
 
-            AgentsLLM(profile=profile)  # 先验证该配置参数完整，再切换
+            # 配置还没填好时，直接打开对应的配置向导，而不是报错
+            if profile == "api" and not has_api_config():
+                self._mount(
+                    Static(
+                        "[#d29922]API 尚未配置，正在打开 API 配置向导…[/]",
+                        classes="warn-msg",
+                    )
+                )
+                self._start_api_config()
+                return
+            if profile == "local" and not has_local_model():
+                self._mount(
+                    Static(
+                        "[#d29922]本地模型尚未导入，正在打开模型导入向导…[/]",
+                        classes="warn-msg",
+                    )
+                )
+                self._start_local_import()
+                return
+
+            AgentsLLM(profile=profile)  # 最后校验参数完整
             set_active_profile(profile)
             self._llm_profile = profile
             cfg = get_profile_config(profile)
@@ -579,6 +649,16 @@ class CodexApp(App):
         if step == "local_path":
             self._handle_local_setup_input(text)
         elif step == "api_base_url":
+            if not text.startswith(("http://", "https://")):
+                self._mount(
+                    Static(
+                        "[red]这不是有效的 API Base URL[/]\n"
+                        "请输入以 http:// 或 https:// 开头的地址，"
+                        "例如 https://api.deepseek.com/v1；不要粘贴 API Key",
+                        classes="error-msg",
+                    )
+                )
+                return
             self._setup_data["base_url"] = text
             self._setup_step = "api_model_id"
             self.prompt.placeholder = "输入模型 ID"
@@ -690,9 +770,9 @@ class CodexApp(App):
         self._setup_scan_results = []
         self.prompt.password = False
         self.prompt.placeholder = (
-            "输入任务，Enter 发送，/help 查看命令"
+            "输入任务，输入 / 查看命令提示"
             if self.mode == "agent"
-            else "输入问题，Enter 发送，/help 查看命令"
+            else "输入问题，输入 / 查看命令提示"
         )
         self._set_status()
         self._mount(Static("[#d29922]已取消配置[/]", classes="warn-msg"))
@@ -708,9 +788,9 @@ class CodexApp(App):
         self.prompt.password = False
         self._llm_profile = get_active_profile()
         self.prompt.placeholder = (
-            "输入任务，Enter 发送，/help 查看命令"
+            "输入任务，输入 / 查看命令提示"
             if self.mode == "agent"
-            else "输入问题，Enter 发送，/help 查看命令"
+            else "输入问题，输入 / 查看命令提示"
         )
         self._set_status()
         self._mount(
@@ -914,10 +994,62 @@ class CodexApp(App):
             self._backend = (AgentsLLM, run_react_loop, MAX_STEPS)
         return self._backend
 
+    # ---------- 本地 vLLM 自动拉起 ----------
+
+    def _local_api_ready(self) -> bool:
+        """探测本地 vLLM 是否已就绪"""
+        try:
+            from llm_client import get_profile_config
+
+            base_url = (
+                get_profile_config("local").get("base_url")
+                or "http://localhost:8000/v1"
+            )
+            url = base_url.rstrip("/") + "/models"
+            with urllib.request.urlopen(url, timeout=2) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _start_local_vllm(self) -> subprocess.Popen:
+        """后台启动本地 vLLM 服务"""
+        script = PROJECT_DIR / "back" / "vllm_server" / "start.sh"
+        return subprocess.Popen(
+            ["bash", str(script)],
+            cwd=str(PROJECT_DIR),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def _ensure_local_vllm(self) -> None:
+        """确保本地 vLLM 已就绪；未运行则自动启动并等待"""
+        if self._local_api_ready():
+            return
+        self._ui(
+            self._add_log,
+            "本地 vLLM 未运行，正在后台启动（首次约 2~3 分钟）...",
+        )
+        proc = self._start_local_vllm()
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            if self._cancel_event.is_set():
+                raise _AgentCancelled()
+            time.sleep(3)
+            if self._local_api_ready():
+                self._ui(self._add_log, "本地 vLLM 已就绪")
+                return
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    "本地 vLLM 进程已退出，请查看 logs/vllm.log"
+                )
+        raise RuntimeError("本地 vLLM 启动超时，请查看 logs/vllm.log")
+
     def run_agent(self, task: str) -> None:
         """Agent 模式：跑 ReAct 主循环，把事件实时投递到界面"""
         try:
             AgentsLLM, run_react_loop, _ = self._import_backend()
+            if (self._llm_profile or "local") == "local":
+                self._ensure_local_vllm()
             llm = AgentsLLM(profile=self._llm_profile)
             hooks = {
                 "on_step": self._agent_step,
@@ -1005,6 +1137,8 @@ class CodexApp(App):
         """对话模式：直接流式调用 LLM"""
         try:
             AgentsLLM, _, _ = self._import_backend()
+            if (self._llm_profile or "local") == "local":
+                self._ensure_local_vllm()
             llm = AgentsLLM(profile=self._llm_profile)
             messages = list(self.chat_messages)
             if not messages:
